@@ -88,3 +88,49 @@ Include download/access information."""
                 formatted += f"  *Owner: {ds['owner']} | Access: {ds['access_level']} | Updated: {ds['last_updated']}*\n"
 
         return formatted
+
+    def format_as_template(
+        self,
+        user_query: str,
+        retrieved_datasets: List[Dict]
+    ) -> str:
+        """
+        Render retrieved datasets as a deterministic template — no LLM call.
+
+        Each dataset is a card: heading (linked), a metadata mini-table,
+        the actual CKAN description as a blockquote, and a direct link.
+
+        Note: no "year" is shown. CKAN only exposes a catalog last-refresh
+        timestamp (metadata_modified), not the real data collection year —
+        showing that as "the year" would misrepresent decade-old datasets
+        (e.g. "2010 Index of Stream Condition") as current.
+        """
+        if not retrieved_datasets:
+            return (
+                f"## No datasets found for: \"{user_query}\"\n\n"
+                "Try being more specific about the region, data type, or access level needed."
+            )
+
+        lines = [f"## Datasets matching: \"{user_query}\"\n"]
+
+        for i, ds in enumerate(retrieved_datasets, 1):
+            description = (ds['description'] or "No description available.").strip()
+            quoted_description = "\n".join(f"> {line}" for line in description.splitlines())
+
+            lines.append(f"### {i}. {ds['title']}\n")
+            lines.append("| Field | Value |")
+            lines.append("|---|---|")
+            lines.append(f"| Access | {ds['access_level']} |")
+            lines.append(f"| Formats | {', '.join(ds['formats'] or []) or 'Unknown'} |")
+            lines.append(f"| Coverage | {', '.join(ds['coverage'] or []) or 'Unknown'} |")
+            lines.append(f"| Catalog updated | {ds['last_updated'] or 'Unknown'} |")
+            lines.append(f"| Relevance | {ds.get('relevance_score', 0)} |")
+            lines.append("")
+            lines.append(quoted_description)
+            lines.append("")
+            lines.append(f"[View dataset →]({ds['url']})")
+            lines.append("")
+            lines.append("---")
+            lines.append("")
+
+        return "\n".join(lines)

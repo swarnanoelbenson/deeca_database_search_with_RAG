@@ -12,32 +12,51 @@ intent_parser = IntentParser()
 searcher = SemanticSearch()
 synthesizer = DatasetSynthesizer()
 
+MAX_TURNS = 5
+CONTEXT_TURNS = 2
+TRIAL_LIMIT_MESSAGE = (
+    "**This is a trial version with a limited chat length.** "
+    "Please click **Clear** (or refresh the page) to start a new session and keep exploring."
+)
+
 
 def chat_response(message: str, history: list) -> str:
     """
     Multi-turn conversation handler.
 
     Flow:
-    1. Parse intent from user message
-    2. Check if clarification needed
-    3. Search for relevant datasets
-    4. Synthesize natural language response
-    5. Format with links
+    1. Enforce a trial session length cap
+    2. Parse intent from user message, using the last couple of turns as
+       context so a follow-up ("after 2010") can be merged with an earlier
+       data type/region ("fire history for Victoria")
+    3. Check if clarification needed
+    4. Search for relevant datasets
+    5. Render the deterministic dataset-card template
     """
-    intent = intent_parser.parse_intent(message)
+    completed_turns = len(history) // 2
+    if completed_turns >= MAX_TURNS:
+        return TRIAL_LIMIT_MESSAGE
+
+    recent_user_messages = [
+        turn["content"] for turn in history
+        if turn.get("role") == "user" and isinstance(turn.get("content"), str)
+    ][-CONTEXT_TURNS:]
+
+    intent = intent_parser.parse_intent(message, recent_user_messages)
 
     if intent.get('clarification_needed'):
         return intent['clarification_question']
 
-    retrieved_datasets = searcher.search(message, intent, limit=5)
+    # Embed a query that includes recent context, not just the current
+    # message — otherwise a follow-up like "after 2010" embeds as an
+    # isolated fragment and the vector search never retrieves datasets
+    # about the subject (e.g. fire) established in the prior turn, even
+    # though the intent parser correctly merged it into structured fields.
+    search_query = " ".join(recent_user_messages + [message])
 
-    response_text = synthesizer.synthesize_response(
-        message,
-        retrieved_datasets,
-        intent
-    )
+    retrieved_datasets = searcher.search(search_query, intent, limit=5)
 
-    return synthesizer.format_with_links(response_text, retrieved_datasets)
+    return synthesizer.format_as_template(message, retrieved_datasets)
 
 
 def create_interface():
