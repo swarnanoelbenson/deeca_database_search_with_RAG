@@ -13,36 +13,57 @@ CKAN_API_BASE = "https://discover.data.vic.gov.au/api/3/action"
 DEECA_ORG_SLUG = "department-of-energy-environment-climate-action"
 
 
+CKAN_PAGE_SIZE = 1000  # CKAN package_search caps `rows` at 1000 per request
+
+
 def fetch_deeca_datasets(rows: int = 200) -> List[Dict]:
     """
-    Fetch DEECA datasets from Victoria's CKAN API.
+    Fetch DEECA datasets from Victoria's CKAN API, paginating past CKAN's
+    1000-rows-per-request cap if more than that are requested.
 
     Args:
-        rows: Max number of datasets to fetch (CKAN caps at 1000/request)
+        rows: Max number of datasets to fetch in total
 
     Returns:
         List of dataset dictionaries with metadata
     """
     url = f"{CKAN_API_BASE}/package_search"
-    params = {
-        "q": f"organization:{DEECA_ORG_SLUG}",
-        "rows": rows,
-        "sort": "title_string asc"
-    }
+    results: List[Dict] = []
+    start = 0
 
     try:
-        response = requests.get(url, params=params, timeout=10)
-        response.raise_for_status()
+        while len(results) < rows:
+            page_size = min(CKAN_PAGE_SIZE, rows - len(results))
+            params = {
+                "q": f"organization:{DEECA_ORG_SLUG}",
+                "rows": page_size,
+                "start": start,
+                "sort": "title_string asc"
+            }
 
-        data = response.json()
-        if data['success']:
-            return data['result']['results']
-        print("CKAN API error:", data)
-        return []
+            response = requests.get(url, params=params, timeout=30)
+            response.raise_for_status()
+
+            data = response.json()
+            if not data['success']:
+                print("CKAN API error:", data)
+                break
+
+            page_results = data['result']['results']
+            if not page_results:
+                break  # no more datasets available
+
+            results.extend(page_results)
+            start += len(page_results)
+
+            if len(page_results) < page_size:
+                break  # last page was partial, nothing more to fetch
+
+        return results
 
     except requests.exceptions.RequestException as e:
         print(f"Error fetching CKAN data: {e}")
-        return []
+        return results
 
 
 def normalize_dataset(ckan_dataset: Dict) -> Dict:
@@ -82,14 +103,19 @@ def extract_formats(resources: List[Dict]) -> List[str]:
     return list(formats) if formats else ['CSV']
 
 
-def populate_database():
+def populate_database(rows: int = 200):
     """
     Fetch datasets from CKAN API, generate embeddings, and populate database.
+
+    Args:
+        rows: Max number of datasets to fetch (paginates past CKAN's
+            1000-per-request cap automatically). Pass a high number
+            (e.g. 2000) to fetch the full DEECA catalog (~1220 datasets).
     """
     init_db()
 
     print("Fetching DEECA datasets from CKAN API...")
-    ckan_datasets = fetch_deeca_datasets()
+    ckan_datasets = fetch_deeca_datasets(rows=rows)
 
     if not ckan_datasets:
         print("No datasets found from CKAN API")

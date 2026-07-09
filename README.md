@@ -1,3 +1,14 @@
+---
+title: DEECA Data Discovery Assistant
+emoji: 🌏
+colorFrom: green
+colorTo: blue
+sdk: gradio
+sdk_version: 6.19.0
+app_file: src/gradio_app.py
+pinned: false
+---
+
 # DEECA DataShare NLP
 
 Natural language interface to Victoria's DataShare platform, built for DEECA

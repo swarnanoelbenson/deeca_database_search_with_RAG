@@ -54,7 +54,13 @@ class SemanticSearch:
         session.close()
 
         data_types = [t.lower() for t in intent.get('data_type', [])]
-        regions = [r.lower() for r in intent.get('region', [])]
+
+        # Default to Victoria-wide if no region was specified. This is a
+        # scoring default only, not a filter — every dataset currently has
+        # coverage=['Victoria'] anyway (see data_fetcher.py normalize_dataset),
+        # so this keeps behavior correct/neutral now and does the right
+        # thing automatically once per-region coverage data is added later.
+        regions = [r.lower() for r in (intent.get('region') or ['Victoria'])]
 
         scored = []
         for dataset, distance in candidates:
@@ -74,6 +80,31 @@ class SemanticSearch:
             if constraints.get('format'):
                 if any(fmt in (dataset.formats or []) for fmt in constraints['format']):
                     score += 1
+
+            # Any other free-form constraint the intent parser extracted
+            # (e.g. a refinement like "only bedrock" -> {"subtype": "bedrock
+            # aquifer"}) — the schema only has fixed keys for access_level/
+            # format/update_recency_days, so anything else is domain-specific
+            # and scored generically: does it appear in the description?
+            # Without this, a refining constraint is parsed correctly but
+            # has zero effect on ranking, so it can't break a near-tie in
+            # favor of the dataset that actually matches the refinement.
+            handled_keys = {'access_level', 'format', 'update_recency_days'}
+            description_lower = (dataset.description or "").lower()
+            title_lower = dataset.title.lower()
+            for key, value in constraints.items():
+                if key in handled_keys or not value or not isinstance(value, str):
+                    continue
+                # Score each significant word of the constraint separately
+                # (e.g. "bedrock aquifer" -> "bedrock", "aquifer") so a
+                # dataset matching part of a multi-word refinement still
+                # gets credit, rather than requiring an exact phrase match.
+                words = [w for w in value.lower().split() if len(w) > 3]
+                for word in words:
+                    if word in title_lower:
+                        score += 2
+                    elif word in description_lower:
+                        score += 1
 
             # Blend in semantic similarity so vector rank isn't discarded
             # by keyword scoring alone (closer distance = higher score).

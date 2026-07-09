@@ -16,26 +16,46 @@ Your job is to understand what environmental data users are looking for.
 
 Extract from user queries:
 1. Intent (find_datasets, explore_data, get_specific_dataset)
-2. Data type (biodiversity, water, fire, energy, property, climate, etc)
-3. Region/location (Victoria-wide, specific region, suburb, etc)
-4. Constraints (access level needed, format preference, recency, etc)
+2. Data type (fire, water, biodiversity, energy, property, climate, etc)
+3. Region (default to ["Victoria"] if not specified — do not ask for a region)
+4. Constraints (access level, format, recency, etc — leave null if not mentioned)
+
+If earlier turns appear in this conversation, your own prior replies are the
+raw JSON you previously returned. If the current message is a follow-up or
+refinement (e.g. a narrower topic, a date range, a region, a format) rather
+than a full new request, merge it with the data_type/region/constraints from
+your most recent prior JSON reply instead of dropping them.
+
+CRITICAL: Only ask for clarification if the query is GENUINELY AMBIGUOUS — i.e.
+you cannot infer any data type at all. A short query naming a topic is clear,
+not ambiguous. Users want results, not follow-up questions. Make confident
+inferences and default missing fields rather than asking.
+
+CLEAR queries (clarification_needed=false) — a topic word or two is enough:
+- "fire data" -> data_type: ["fire"], region: ["Victoria"]
+- "i want water" -> data_type: ["water"], region: ["Victoria"]
+- "biodiversity dandenongs" -> data_type: ["biodiversity"], region: ["Dandenongs"]
+- "fire data in victoria from 2010" -> data_type: ["fire"], region: ["Victoria"], constraints.update_recency_days/date info captured
+
+AMBIGUOUS queries (clarification_needed=true) — only when no topic at all is named:
+- "show me data" -> no data type mentioned
+- "i need information" -> no data type mentioned
+- "stuff" -> meaningless
 
 Return ONLY a JSON object (no other text):
 {
   "intent": "find_datasets",
-  "data_type": ["biodiversity"],
-  "region": ["Dandenongs"],
+  "data_type": ["fire"],
+  "region": ["Victoria"],
   "constraints": {
-    "access_level": "PUBLIC",
-    "format": ["CSV"],
+    "access_level": null,
+    "format": null,
     "update_recency_days": null
   },
   "clarification_needed": false,
   "clarification_question": null,
-  "confidence": 0.95
-}
-
-If you need clarification, set clarification_needed=true."""
+  "confidence": 0.85
+}"""
 
 
 FALLBACK_INTENT = {
@@ -48,49 +68,43 @@ FALLBACK_INTENT = {
     "confidence": 0.0
 }
 
+# Bound how many prior turns are replayed. Each turn is 2 messages (user +
+# assistant), so this caps token growth — unbounded history previously
+# starved the model's output budget (thinking consumed the whole max_tokens
+# before any text was emitted), causing an uncaught crash.
+MAX_HISTORY_TURNS = 3
+
 
 class IntentParser:
     def __init__(self):
         self.model = MODEL
 
-    def parse_intent(self, user_query: str, recent_user_messages: Optional[List[str]] = None) -> Dict:
+    def parse_intent(self, user_query: str, intent_history: Optional[List[Dict]] = None) -> Dict:
         """
         Parse a user query to extract intent, data_type, region, and
-        constraints.
-
-        Each call is otherwise independent — no accumulated, ever-growing
-        conversation history is sent (that caused unbounded token growth
-        and eventually starved the model's output budget). Instead, the
-        caller may pass a small, bounded list of recent prior user messages
-        (e.g. the last 1-2 turns) so a follow-up like "after 2010" can be
-        merged with the data type/region mentioned earlier, without
-        replaying the full transcript.
+        constraints — using real prior turns as conversation history, the
+        way the Anthropic API is designed to be used (alternating user/
+        assistant messages), rather than a paraphrased text summary.
 
         Args:
             user_query: The current message to interpret
-            recent_user_messages: Up to a couple of prior user messages,
-                oldest first, for follow-up disambiguation only
+            intent_history: Prior turns as alternating {"role", "content"}
+                dicts, where each assistant "content" is the raw JSON this
+                method previously returned (serialized). Bounded to the
+                last MAX_HISTORY_TURNS turns here as a safety net even if
+                the caller passes more.
 
         Returns:
             Dictionary with structured intent information
         """
-        if recent_user_messages:
-            context = "\n".join(f"- \"{m}\"" for m in recent_user_messages)
-            composed_query = (
-                f"Earlier messages in this conversation (context only):\n{context}\n\n"
-                f"Current message to interpret: \"{user_query}\"\n\n"
-                "If the current message is a follow-up/refinement (e.g. a date range, "
-                "format, or access level with no data type/region of its own), merge in "
-                "the data type/region from the earlier messages above."
-            )
-        else:
-            composed_query = user_query
+        messages = list(intent_history or [])[-(MAX_HISTORY_TURNS * 2):]
+        messages.append({"role": "user", "content": user_query})
 
         response = client.messages.create(
             model=self.model,
             max_tokens=1024,
             system=SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": composed_query}]
+            messages=messages
         )
 
         text_blocks = [block.text for block in response.content if block.type == "text"]
