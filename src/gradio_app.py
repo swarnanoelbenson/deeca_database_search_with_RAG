@@ -2,6 +2,7 @@
 Gradio chat interface for DataShare NLP.
 """
 import json
+import os
 
 import gradio as gr
 
@@ -143,7 +144,7 @@ if __name__ == "__main__":
     demo = create_interface()
     demo.launch(
         server_name="0.0.0.0",
-        server_port=7860,
+        server_port=int(os.environ.get("PORT", 7860)),
         share=False,
         theme=gr.themes.Soft(),
         css=CUSTOM_CSS,
